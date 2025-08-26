@@ -102,3 +102,55 @@ Salidas:
 - **Clasificación** de hojas: saludable vs afectada.
 
 > Abrí un issue si querés priorizar estos pasos, o enviá un PR.
+
+
+## 6) Segmentación con SAM (carpeta única) → PNG RGBA
+
+```bash
+# Ejemplo: segmentar los recortes de YOLO en data/crops → data/sam
+python scripts/segment/sam_segment_single.py   --input data/crops   --output data/sam   --checkpoint checkpoints/sam_vit_b_01ec64.pth   --model vit_b   --max_width 1280   --min_area_frac 0.002
+```
+
+- Entrada: `data/crops/*.jpg` (recortes por hoja).
+- Salida: `data/sam/*.png` (fondo transparente).
+
+## 7) Clasificación (saludable vs afectada)
+
+### Opción A: clasificador simple (incluido más adelante)
+*(Próxima sección; baseline con sklearn o torch).*
+
+### Opción B: **framework Lacunarity** (repo externo)  
+Si querés replicar exactamente el pipeline que usaste (Pooling por Lacunaridad: CVPRW 2024), usá el repo externo y copiá adentro los archivos adaptados que están en `scripts/classify/external_lacunarity/` de este repo.
+
+Pasos:
+1. Clonar el repo oficial (o añadirlo como submódulo):
+   ```bash
+   git clone https://github.com/Advanced-Vision-and-Learning-Lab/2024_V4A_Lacunarity_Pooling_Layer.git
+   cd 2024_V4A_Lacunarity_Pooling_Layer
+   pip install -r requirements.txt
+   ```
+2. Copiar los archivos adaptados desde **este** repo a la misma estructura del repo externo:
+   - `Datasets/Get_transform.py`
+   - `Prepare_Data.py`
+   - `Demo_Parameters.py` (añade `CoffeeLeaves` = 2 clases)
+   - `demo.py` (entrenamiento FT)
+   - `View_Results.py` (resúmenes y curvas)
+   - `classify_folder.py` (inferencia y volcado por carpetas)
+3. Estructurar tu dataset `CoffeeLeaves` (ImageFolder):
+   ```
+   2024_V4A_Lacunarity_Pooling_Layer/
+     Datasets/CoffeeLeaves/
+       train/healthy|affected
+       val/healthy|affected
+       test/healthy|affected  # opcional (si no, usa val)
+   ```
+4. Entrenar (ejemplo ResNet18 + MS_Lacunarity):
+   ```bash
+   python demo.py --data_selection 4 --pooling_layer 6 --agg_func 1 --model resnet18      --use_pretrained --no-feature_extraction --num_epochs 20 --earlystoppping 10      --lr 0.001 --train_batch_size 32 --val_batch_size 32 --test_batch_size 32 --resize_size 384 --use-cuda
+   ```
+5. Clasificar PNG segmentados con los **Best_Weights.pt** más recientes:
+   ```bash
+   python classify_folder.py --input "<ruta a data/sam>" --output "classified_output" --move
+   # o indicando pesos explícitos:
+   # --weights "<.../Saved_Models/MS_Lacunarity/global/Fine_Tuning/CoffeeLeaves/resnet18/Run_1/Best_Weights.pt>"
+   ```
