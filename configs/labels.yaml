@@ -1,0 +1,6 @@
+# C:\Cosas\2025\IBERO2025\train_data\labels.yaml
+path: C:\Cosas\2025\IBERO2025\train_data
+train: C:\Cosas\2025\IBERO2025\train_data\images\train
+val:   C:\Cosas\2025\IBERO2025\train_data\images\val
+nc: 1
+names: [hoja]

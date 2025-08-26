@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+data/raw/
+runs/
+weights/
+checkpoints/
+.vscode/
+.idea/
+Thumbs.db
