@@ -47,18 +47,18 @@ def main():
 
     for r in results:
         img = r.orig_img
-        if img is None: 
+        if img is None:
             continue
         h, w = img.shape[:2]
         stem = os.path.splitext(os.path.basename(r.path))[0]
 
-        if r.boxes is None: 
+        if r.boxes is None:
             continue
         for b in r.boxes:
             xyxy = b.xyxy[0].tolist()
             conf = float(b.conf[0]) if b.conf is not None else 0.0
             crop = crop_xyxy(img, xyxy)
-            if crop is None: 
+            if crop is None:
                 continue
 
             crop_name = f"{stem}_{uuid.uuid4().hex[:8]}.jpg"

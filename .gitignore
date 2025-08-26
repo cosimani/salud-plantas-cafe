@@ -1,10 +1,24 @@
+# Python
 __pycache__/
 *.pyc
 .venv/
-data/raw/
+.env
+
+# Editors
+.vscode/
+.idea/
+
+# Data / runs
+data/unlabeled/
+data/crops/
+data/yolo/images/train/
+data/yolo/images/val/
+data/yolo/labels/train/
+data/yolo/labels/val/
 runs/
 weights/
 checkpoints/
-.vscode/
-.idea/
+
+# OS
+.DS_Store
 Thumbs.db
