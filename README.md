@@ -21,7 +21,7 @@ cd salud-plantas-cafe
 # Crear entorno virtual (Python 3.10/3.11)
 python -m venv .venv
 # Windows
-. .\.venv\Scripts\activate
+. .venv\Scripts\activate
 # macOS/Linux
 # source .venv/bin/activate
 
@@ -103,6 +103,7 @@ Salidas:
 
 > Abrí un issue si querés priorizar estos pasos, o enviá un PR.
 
+---
 
 ## 6) Segmentación con SAM (carpeta única) → PNG RGBA
 
@@ -113,6 +114,8 @@ python scripts/segment/sam_segment_single.py   --input data/crops   --output dat
 
 - Entrada: `data/crops/*.jpg` (recortes por hoja).
 - Salida: `data/sam/*.png` (fondo transparente).
+
+---
 
 ## 7) Clasificación (saludable vs afectada)
 
@@ -154,3 +157,74 @@ Pasos:
    # o indicando pesos explícitos:
    # --weights "<.../Saved_Models/MS_Lacunarity/global/Fine_Tuning/CoffeeLeaves/resnet18/Run_1/Best_Weights.pt>"
    ```
+
+---
+
+## 📦 Dataset YOLO (estructura + ejemplos)
+
+Este repositorio incluye ya creada la estructura `data/yolo` con un **mini set de ejemplo**:
+
+```
+data/yolo/
+  images/
+    train/   (8 imágenes de ejemplo con sus labels)
+    val/     (2 imágenes de ejemplo con sus labels)
+    test/    (5 imágenes de ejemplo sin labels)
+  labels/
+    train/   (8 .txt YOLO)
+    val/     (2 .txt YOLO)
+configs/
+  labels.yaml
+```
+
+- El archivo `configs/labels.yaml` ya apunta a estas rutas (repo-relativas).
+- Clase única: `leaf`.
+
+### ▶️ Probar con el mini set de ejemplo
+Para verificar que todo funciona (entrenamiento corto):
+```bash
+yolo train model=yolov8s.pt data=configs/labels.yaml epochs=1 imgsz=320 batch=8
+```
+
+
+
+### ⬇️ Descargar el dataset completo
+El dataset completo **no está en el repo** para mantenerlo liviano.  
+Podés bajarlo desde la sección **[Releases](../../releases)** como `dataset-hojas-cafe-yolov8-v1.zip`.
+
+1. Descargar `dataset-hojas-cafe-yolov8-v1.zip`.
+2. Descomprimir en la raíz del repo, sobrescribiendo `data/yolo`:
+
+```powershell
+# Windows (PowerShell)
+Expand-Archive -Path .\dataset-hojas-cafe-yolov8-v1.zip -DestinationPath .
+```
+
+```bash
+# Linux/macOS
+unzip dataset-hojas-cafe-yolov8-v1.zip -d .
+```
+
+### ➕ Agregar más imágenes etiquetadas
+1. Copiar tus `.jpg/.png` a:
+   - `data/yolo/images/train` o `data/yolo/images/val`
+2. Copiar los `.txt` YOLO (mismo nombre base) a:
+   - `data/yolo/labels/train` o `data/yolo/labels/val`
+3. Entrenar de nuevo:
+```bash
+yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=320 batch=32
+```
+
+### 🔬 Usar el conjunto de test
+- Si tus imágenes de `images/test` no tienen labels, podés evaluar visualmente:
+```bash
+yolo predict model=runs/detect/train/weights/best.pt source=data/yolo/images/test
+```
+
+- O generar recortes automáticos para alimentar a SAM:
+```bash
+python scripts/predict_and_crop_with_yolov8.py \
+  --weights runs/detect/train/weights/best.pt \
+  --source  data/yolo/images/test \
+  --out_dir data/crops
+```

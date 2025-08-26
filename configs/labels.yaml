@@ -1,6 +1,7 @@
-# YOLO dataset config (relative paths)
+# YOLO dataset config (relative)
 path: data/yolo
 train: images/train
 val: images/val
+test: images/test
 nc: 1
 names: [leaf]
