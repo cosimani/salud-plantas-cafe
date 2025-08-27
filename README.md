@@ -58,7 +58,9 @@ python -c "import torch; print(torch.cuda.is_available())"
 ```plaintext
 salud-plantas-cafe/
 ├─ configs/labels.yaml        # configuración YOLO (clases)
-├─ checkpoints/               # modelos entrenados (YOLO + ResNet + SAM .pth)
+├─ checkpoints/               # modelos entrenado de SAM (se genera al ejecutar)
+├─ data/                      # imágenes para entrenamiento yolo y clasificador (se debe descargar de Release)
+├─ run/                       # modelos y predicciones de yolo y clasificación (se genera con el uso)
 ├─ scripts/                   # scripts principales
 │  ├─ pipeline/analyze_image.py
 │  ├─ predict_and_crop_with_yolov8.py
@@ -77,7 +79,7 @@ salud-plantas-cafe/
 ## 🏋️ Entrenamiento YOLOv8
 
 ```bash
-yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=960 batch=32
+yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=640 batch=32
 ```
 
 📦 Dataset YOLO disponible en **Releases**:  

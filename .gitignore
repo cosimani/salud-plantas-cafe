@@ -10,13 +10,7 @@ __pycache__/
 
 # Data / runs
 data/
-data/crops/
-data/yolo/images/train/
-data/yolo/images/val/
-data/yolo/labels/train/
-data/yolo/labels/val/
 runs/
-weights/
 checkpoints/
 
 # OS
