@@ -1,164 +1,152 @@
 # -*- coding: utf-8 -*-
-import argparse, os, json, csv, random
+import argparse, os, time, json, random
 from pathlib import Path
-
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-from torchvision import models, transforms
-from torchvision.datasets import ImageFolder
-from PIL import Image
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms, models
 
-IMAGENET_MEAN = [0.485, 0.456, 0.406]
-IMAGENET_STD  = [0.229, 0.224, 0.225]
+def set_seed(seed: int):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
 
-def seed_everything(seed: int):
-    random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-class RGBAImageFolder(ImageFolder):
-    """ImageFolder que compone PNG RGBA sobre fondo blanco."""
-    def __init__(self, root, transform=None):
-        super().__init__(root, transform=transform)
-
-    def __getitem__(self, index):
-        path, target = self.samples[index]
-        img = Image.open(path).convert("RGBA")
-        # Componer sobre blanco
-        bg = Image.new("RGB", img.size, (255, 255, 255))
-        bg.paste(img, mask=img.split()[-1])  # alpha
-        if self.transform is not None:
-            bg = self.transform(bg)
-        return bg, target
-
-def build_transforms(img_size: int):
+def build_dataloaders(root, img_size, batch_size, num_workers=2):
+    mean = [0.485, 0.456, 0.406]; std = [0.229, 0.224, 0.225]
     train_tf = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.RandomHorizontalFlip(),
         transforms.RandomRotation(10),
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        transforms.ColorJitter(0.1, 0.1, 0.1, 0.05),
+        transforms.ToTensor(), transforms.Normalize(mean, std),
     ])
     val_tf = transforms.Compose([
         transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        transforms.ToTensor(), transforms.Normalize(mean, std),
     ])
-    return train_tf, val_tf
+    train_dir = os.path.join(root, "train")
+    val_dir = os.path.join(root, "val")
+    train_ds = datasets.ImageFolder(train_dir, transform=train_tf)
+    val_ds   = datasets.ImageFolder(val_dir,   transform=val_tf)
+    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
+    val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    return train_ds, val_ds, train_dl, val_dl
 
-def save_json(obj, path):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
+def build_model(name, num_classes, use_pretrained, feature_extraction):
+    name = name.lower()
+    if name == "resnet18":
+        model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT if use_pretrained else None)
+        in_feats = model.fc.in_features
+        model.fc = nn.Linear(in_feats, num_classes)
+        if feature_extraction:
+            for p in model.parameters(): p.requires_grad = False
+            for p in model.fc.parameters(): p.requires_grad = True
+    elif name == "resnet50":
+        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT if use_pretrained else None)
+        in_feats = model.fc.in_features
+        model.fc = nn.Linear(in_feats, num_classes)
+        if feature_extraction:
+            for p in model.parameters(): p.requires_grad = False
+            for p in model.fc.parameters(): p.requires_grad = True
+    else:
+        raise ValueError(f"Modelo no soportado: {name}")
+    return model
 
-def train_one_epoch(model, loader, device, criterion, optimizer):
-    model.train()
-    loss_sum, correct, total = 0.0, 0, 0
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        optimizer.zero_grad()
-        logits = model(x)
-        loss = criterion(logits, y)
-        loss.backward()
-        optimizer.step()
-        loss_sum += loss.item() * x.size(0)
-        pred = logits.argmax(1)
-        correct += (pred == y).sum().item()
-        total += x.size(0)
-    return loss_sum / total, correct / total
+def evaluate(model, dl, device):
+    model.eval(); correct=0; total=0; loss_sum=0.0
+    criterion = nn.CrossEntropyLoss()
+    with torch.no_grad():
+        for x,y in dl:
+            x,y = x.to(device), y.to(device)
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss_sum += loss.item() * x.size(0)
+            preds = logits.argmax(1)
+            correct += (preds==y).sum().item()
+            total += x.size(0)
+    return loss_sum/total, correct/total
 
-@torch.no_grad()
-def evaluate(model, loader, device, criterion):
-    model.eval()
-    loss_sum, correct, total = 0.0, 0, 0
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        logits = model(x)
-        loss = criterion(logits, y)
-        loss_sum += loss.item() * x.size(0)
-        pred = logits.argmax(1)
-        correct += (pred == y).sum().item()
-        total += x.size(0)
-    return loss_sum / total, correct / total
+def train(args):
+    set_seed(args.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device)
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--data_dir", required=True, help="data/sam (healthy/ affected)")
-    ap.add_argument("--out_dir", required=True, help="runs/classify_resnet/exp1")
-    ap.add_argument("--epochs", type=int, default=20)
-    ap.add_argument("--batch_size", type=int, default=32)
-    ap.add_argument("--img_size", type=int, default=224)
-    ap.add_argument("--val_split", type=float, default=0.2)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--weight_decay", type=float, default=1e-4)
-    ap.add_argument("--patience", type=int, default=8, help="early stopping")
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
+    train_ds, val_ds, train_dl, val_dl = build_dataloaders(args.data_dir, args.img_size, args.batch_size, args.workers)
+    class_names = train_ds.classes
+    num_classes = len(class_names)
+    print("Clases:", class_names)
 
-    seed_everything(args.seed)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    os.makedirs(args.out_dir, exist_ok=True)
+    model = build_model(args.model, num_classes, args.use_pretrained, args.feature_extraction is True)
+    model = model.to(device)
 
-    train_tf, val_tf = build_transforms(args.img_size)
-    full_ds = RGBAImageFolder(args.data_dir, transform=None)  # transform per split
-
-    # Split
-    n_total = len(full_ds)
-    n_val = int(args.val_split * n_total)
-    n_train = n_total - n_val
-    train_ds, val_ds = random_split(full_ds, [n_train, n_val], generator=torch.Generator().manual_seed(args.seed))
-    train_ds.dataset.transform = train_tf
-    val_ds.dataset.transform = val_tf
-
-    # Dataloaders
-    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=2, pin_memory=True)
-    val_ld   = DataLoader(val_ds,   batch_size=args.batch_size, shuffle=False, num_workers=2, pin_memory=True)
-
-    # Modelo
-    weights = models.ResNet18_Weights.IMAGENET1K_V1
-    model = models.resnet18(weights=weights)
-    model.fc = nn.Linear(model.fc.in_features, 2)  # healthy vs affected
-    model.to(device)
+    # Optim y scheduler
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    # Guardar mapping de clases
-    class_to_idx = full_ds.class_to_idx
-    save_json(class_to_idx, os.path.join(args.out_dir, "class_to_idx.json"))
-    save_json(vars(args), os.path.join(args.out_dir, "config.json"))
-
-    # Log CSV
-    log_path = os.path.join(args.out_dir, "train_log.csv")
-    with open(log_path, "w", newline="", encoding="utf-8") as f:
-        wr = csv.writer(f); wr.writerow(["epoch","train_loss","train_acc","val_loss","val_acc","best"])
+    # Salidas
+    run_dir = Path(f"runs/classify/{args.model}")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    best_path = run_dir / "best.pt"
+    meta_path = run_dir / "meta.json"
 
     best_acc = -1.0
-    best_path = os.path.join(args.out_dir, "best.pt")
-    patience_left = args.patience
+    patience = args.early_stop
+    patience_counter = 0
 
     for epoch in range(1, args.epochs+1):
-        tr_loss, tr_acc = train_one_epoch(model, train_ld, device, criterion, optimizer)
-        va_loss, va_acc = evaluate(model, val_ld, device, criterion)
+        model.train()
+        epoch_loss=0.0; seen=0
+        t0=time.time()
+        for x,y in train_dl:
+            x,y = x.to(device), y.to(device)
+            optimizer.zero_grad()
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item() * x.size(0)
+            seen += x.size(0)
+        scheduler.step()
 
-        is_best = va_acc > best_acc
-        if is_best:
-            best_acc = va_acc
-            torch.save({"model": model.state_dict(), "class_to_idx": class_to_idx}, best_path)
-            patience_left = args.patience
+        val_loss, val_acc = evaluate(model, val_dl, device)
+        tr_loss = epoch_loss/seen
+        dt=time.time()-t0
+        print(f"[{epoch:03d}/{args.epochs}] train_loss={tr_loss:.4f} | val_loss={val_loss:.4f} | val_acc={val_acc:.4f} | {dt:.1f}s")
 
-        with open(log_path, "a", newline="", encoding="utf-8") as f:
-            wr = csv.writer(f); wr.writerow([epoch, f"{tr_loss:.4f}", f"{tr_acc:.4f}", f"{va_loss:.4f}", f"{va_acc:.4f}", int(is_best)])
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save({"state_dict": model.state_dict(), "classes": class_names, "args": vars(args)}, best_path)
+            patience_counter = 0
+            print(f"  -> guardado: {best_path} (val_acc={best_acc:.4f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"  -> early stopping (paciencia={patience})")
+                break
 
-        print(f"[{epoch}/{args.epochs}] train_acc={tr_acc:.3f} val_acc={va_acc:.3f} {'*' if is_best else ''}")
-
-        patience_left -= 1
-        if patience_left <= 0:
-            print("Early stopping.")
-            break
-
-    print(f"Best val_acc: {best_acc:.4f} | Saved: {best_path}")
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump({"classes": class_names, "best_acc": best_acc, "args": vars(args)}, f, indent=2, ensure_ascii=False)
+    print("Listo. Mejor modelo:", best_path)
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data_dir", required=True, help="Carpeta con train/ y val/")
+    ap.add_argument("--model", default="resnet18", choices=["resnet18","resnet50"])
+    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--batch_size", type=int, default=32)
+    ap.add_argument("--img_size", type=int, default=384)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--weight_decay", type=float, default=1e-4)
+    ap.add_argument("--use_pretrained", action="store_true")
+    ap.add_argument("--feature_extraction", action="store_true", help="Si se pasa, congela el backbone y entrena solo la cabeza")
+    ap.add_argument("--no_feature_extraction", action="store_true", help="Compatibilidad con README: ignora y hace FT completo")
+    ap.add_argument("--workers", type=int, default=2)
+    ap.add_argument("--early_stop", type=int, default=10)
+    ap.add_argument("--seed", type=int, default=42)
+    args = ap.parse_args()
+    # Compat: si pasan --no_feature_extraction, entonces feature_extraction=False:
+    if args.no_feature_extraction:
+        args.feature_extraction = False
+    train(args)

@@ -65,9 +65,18 @@ Si ya tenés imágenes **sin etiquetar**, podés dejarlas en cualquier carpeta (
 
 ## 3) Entrenamiento YOLOv8
 
+# Ver configuración actual (opcional)
+yolo settings
+
+# Pararse en la raiz del repo
+
+# Apuntar el datasets_dir al repo clonado (¡ajusta la ruta a tu clon!)
+yolo settings datasets_dir="."
+
+
 ```bash
 # Desde la raíz del repo
-yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=320 batch=32
+yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=640 batch=32
 ```
 
 - Pesos de salida típicos: `runs/detect/train/weights/best.pt` (Ultralytics los crea automáticamente).
@@ -79,20 +88,13 @@ yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=320 batch=
 Con un modelo entrenado (ruta a tus `best.pt`), generá recortes de hojas a partir de una carpeta de imágenes **no etiquetadas**:
 
 ```bash
-python scripts/predict_and_crop_with_yolov8.py \
-  --weights runs/detect/train/weights/best.pt \
-  --source  data/unlabeled \
-  --out_dir data/crops \
-  --conf 0.25
+python scripts/predict_and_crop_with_yolov8.py --weights runs/detect/train/weights/best.pt --source  data/yolo/images/test --out_dir data/crops --conf 0.50
 ```
 
 Salidas:
 - Recortes: `data/crops/*.jpg`
 - Metadatos: `data/crops/crops_manifest.csv` (archivo con caja, confianza y origen)
-
-**Flags útiles** (próximas versiones):
-- `--min_area`: descartar cajas muy pequeñas
-- `--pad`: agregar margen alrededor del recorte
+- Imágenes anotadas: `data/predict/*.jpg`
 
 ---
 
@@ -103,14 +105,33 @@ Salidas:
 
 > Abrí un issue si querés priorizar estos pasos, o enviá un PR.
 
+instalar pip install git+https://github.com/facebookresearch/segment-anything.git
+
+
 ---
 
 ## 6) Segmentación con SAM (carpeta única) → PNG RGBA
 
+para ejecutar en GPU 
+
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+y verificar con
+
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+
+debería mostrar algo así
+
+True NVIDIA GeForce RTX 4060 Laptop GPU
+
+
+
 ```bash
 # Ejemplo: segmentar los recortes de YOLO en data/crops → data/sam
-python scripts/segment/sam_segment_single.py   --input data/crops   --output data/sam   --checkpoint checkpoints/sam_vit_b_01ec64.pth   --model vit_b   --max_width 1280   --min_area_frac 0.002
+python scripts/segment/sam_segment_single_smallcrops.py   --input data/crops   --output data/sam   --checkpoint checkpoints/sam_vit_b_01ec64.pth   --model vit_b    --max_width 256 --min_area_frac 0.20
 ```
+
 
 - Entrada: `data/crops/*.jpg` (recortes por hoja).
 - Salida: `data/sam/*.png` (fondo transparente).
@@ -119,112 +140,170 @@ python scripts/segment/sam_segment_single.py   --input data/crops   --output dat
 
 ## 7) Clasificación (saludable vs afectada)
 
-### Opción A: clasificador simple (incluido más adelante)
-*(Próxima sección; baseline con sklearn o torch).*
+### Opción A — Clasificador simple (incluido en este repo)
 
-### Opción B: **framework Lacunarity** (repo externo)  
-Si querés replicar exactamente el pipeline que usaste (Pooling por Lacunaridad: CVPRW 2024), usá el repo externo y copiá adentro los archivos adaptados que están en `scripts/classify/external_lacunarity/` de este repo.
+Usamos un **ResNet18** fine-tune con `torchvision` sobre un dataset tipo **ImageFolder**:
 
-Pasos:
-1. Clonar el repo oficial (o añadirlo como submódulo):
-   ```bash
-   git clone https://github.com/Advanced-Vision-and-Learning-Lab/2024_V4A_Lacunarity_Pooling_Layer.git
-   cd 2024_V4A_Lacunarity_Pooling_Layer
-   pip install -r requirements.txt
-   ```
-2. Copiar los archivos adaptados desde **este** repo a la misma estructura del repo externo:
-   - `Datasets/Get_transform.py`
-   - `Prepare_Data.py`
-   - `Demo_Parameters.py` (añade `CoffeeLeaves` = 2 clases)
-   - `demo.py` (entrenamiento FT)
-   - `View_Results.py` (resúmenes y curvas)
-   - `classify_folder.py` (inferencia y volcado por carpetas)
-3. Estructurar tu dataset `CoffeeLeaves` (ImageFolder):
-   ```
-   2024_V4A_Lacunarity_Pooling_Layer/
-     Datasets/CoffeeLeaves/
-       train/healthy|affected
-       val/healthy|affected
-       test/healthy|affected  # opcional (si no, usa val)
-   ```
-4. Entrenar (ejemplo ResNet18 + MS_Lacunarity):
-   ```bash
-   python demo.py --data_selection 4 --pooling_layer 6 --agg_func 1 --model resnet18      --use_pretrained --no-feature_extraction --num_epochs 20 --earlystoppping 10      --lr 0.001 --train_batch_size 32 --val_batch_size 32 --test_batch_size 32 --resize_size 384 --use-cuda
-   ```
-5. Clasificar PNG segmentados con los **Best_Weights.pt** más recientes:
-   ```bash
-   python classify_folder.py --input "<ruta a data/sam>" --output "classified_output" --move
-   # o indicando pesos explícitos:
-   # --weights "<.../Saved_Models/MS_Lacunarity/global/Fine_Tuning/CoffeeLeaves/resnet18/Run_1/Best_Weights.pt>"
-   ```
 
----
+data/classify/CoffeeLeaves/
+train/healthy | train/affected
+val/healthy | val/affected
 
-## 📦 Dataset YOLO (estructura + ejemplos)
 
-Este repositorio incluye ya creada la estructura `data/yolo` con un **mini set de ejemplo**:
 
-```
-data/yolo/
-  images/
-    train/   (8 imágenes de ejemplo con sus labels)
-    val/     (2 imágenes de ejemplo con sus labels)
-    test/    (5 imágenes de ejemplo sin labels)
-  labels/
-    train/   (8 .txt YOLO)
-    val/     (2 .txt YOLO)
-configs/
-  labels.yaml
-```
+> Dataset de ejemplo (mini) en el repo.  
+> Dataset **completo** disponible en **Releases** (ver abajo).
 
-- El archivo `configs/labels.yaml` ya apunta a estas rutas (repo-relativas).
-- Clase única: `leaf`.
-
-### ▶️ Probar con el mini set de ejemplo
-Para verificar que todo funciona (entrenamiento corto):
+**Entrenar (GPU/CPU):**
 ```bash
-yolo train model=yolov8s.pt data=configs/labels.yaml epochs=1 imgsz=320 batch=8
+# Entrena y guarda pesos en runs/classify/resnet18/best.pt
+python scripts/classify/train_resnet.py \
+  --data_dir data/classify/CoffeeLeaves \
+  --model resnet18 \
+  --epochs 20 \
+  --batch_size 32 \
+  --lr 0.001 \
+  --img_size 384 \
+  --use_pretrained \
+  --no_feature_extraction  # fine-tune completo
+
 ```
 
+Inferencia sobre las PNG segmentadas por SAM:
+
+# Clasifica cada PNG de data/sam en healthy/affected
+python scripts/classify/predict_resnet.py \
+  --weights runs/classify/resnet18/best.pt \
+  --input  data/sam \
+  --output data/classify_output \
+  --move
 
 
-### ⬇️ Descargar el dataset completo
-El dataset completo **no está en el repo** para mantenerlo liviano.  
-Podés bajarlo desde la sección **[Releases](../../releases)** como `dataset-hojas-cafe-yolov8-v1.zip`.
+Parámetros útiles:
 
-1. Descargar `dataset-hojas-cafe-yolov8-v1.zip`.
-2. Descomprimir en la raíz del repo, sobrescribiendo `data/yolo`:
+--feature_extraction (en vez de --no_feature_extraction) congela el backbone y sólo entrena el head.
 
-```powershell
-# Windows (PowerShell)
-Expand-Archive -Path .\dataset-hojas-cafe-yolov8-v1.zip -DestinationPath .
-```
+--img_size 224/256/384 según GPU.
 
-```bash
-# Linux/macOS
-unzip dataset-hojas-cafe-yolov8-v1.zip -d .
-```
+--seed 42 para reproducibilidad.
 
-### ➕ Agregar más imágenes etiquetadas
-1. Copiar tus `.jpg/.png` a:
-   - `data/yolo/images/train` o `data/yolo/images/val`
-2. Copiar los `.txt` YOLO (mismo nombre base) a:
-   - `data/yolo/labels/train` o `data/yolo/labels/val`
-3. Entrenar de nuevo:
-```bash
-yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=320 batch=32
-```
 
-### 🔬 Usar el conjunto de test
-- Si tus imágenes de `images/test` no tienen labels, podés evaluar visualmente:
-```bash
-yolo predict model=runs/detect/train/weights/best.pt source=data/yolo/images/test
-```
 
-- O generar recortes automáticos para alimentar a SAM:
-```bash
-python scripts/predict_and_crop_with_yolov8.py \
-  --weights runs/detect/train/weights/best.pt \
-  --source  data/yolo/images/test \
-  --out_dir data/crops
-```
+7) Clasificación (saludable vs afectada)
+
+La clasificación se entrena con ResNet18 (torchvision) usando un dataset ImageFolder:
+
+
+data/
+└─ classify/
+   ├─ train/
+   │   ├─ healthy/
+   │   └─ affected/
+   └─ val/
+       ├─ healthy/
+       └─ affected/
+
+
+Hay un mini set de ejemplo en el repo.
+El dataset completo está en Releases (dataset-leaves-yolo-classify-v1.zip).
+Descomprimí en la raíz del repo y quedará data/classify/... como arriba.
+
+Entrenamiento (GPU recomendado, funciona en CPU):
+
+# CMD/PowerShell en la raíz del repo (una sola línea)
+python scripts/classify/train_resnet.py --data_dir data/classify --model resnet18 --epochs 20 --batch_size 32 --lr 0.001 --img_size 384 --use_pretrained --no_feature_extraction
+
+
+
+
+Salida: runs/classify/resnet18/best.pt (mejor val acc).
+
+Si te quedás sin VRAM, probá --img_size 224 y/o --batch_size 16.
+
+Inferencia sobre las PNG segmentadas por SAM (por carpeta):
+
+
+
+# Clasifica cada PNG de data/sam en healthy o affected y copia/mueve a subcarpetas
+python scripts/classify/predict_resnet.py --weights runs/classify/resnet18/best.pt --input data/sam --output data/classify_output --move
+
+
+
+Parámetros útiles:
+
+--feature_extraction (en lugar de --no_feature_extraction) congela el backbone y solo entrena la cabeza.
+
+--seed 42 para reproducibilidad.
+
+--topk 3 en predicción para guardar CSV con top-k scores.
+
+
+
+Resumen de uso
+
+Entrenar (desde raíz del repo):
+
+
+python scripts/classify/train_resnet.py --data_dir data/classify --model resnet18 --epochs 20 --batch_size 32 --lr 0.001 --img_size 384 --use_pretrained --no_feature_extraction
+
+
+Clasificar los PNG de data/sam:
+
+
+python scripts/classify/predict_resnet.py --weights runs/classify/resnet18/best.pt --input data/sam --output data/classify_output --move
+
+
+
+
+
+pipeline
+
+
+Imagen única:
+
+python scripts\pipeline\analyze_image.py --image data\yolo\images\test\test_0000.jpg --yolo_weights runs\detect\train\weights\best.pt --clf_weights runs\classify\resnet18\best.pt --out_dir runs\pipeline --yolo_imgsz 960 --yolo_conf 0.40 --save_crops --save_sam --sam_checkpoint checkpoints\sam_vit_b_01ec64.pth --sam_model vit_b --sam_max_width 256 --sam_min_area_frac 0.20 --separate_by_class
+
+
+
+Carpeta entera
+
+python scripts\pipeline\analyze_image.py --dir data\yolo\images\test --yolo_weights runs\detect\train\weights\best.pt --clf_weights runs\classify\resnet18\best.pt --out_dir runs\pipeline --yolo_imgsz 960 --yolo_conf 0.40 --save_crops --save_sam --sam_checkpoint checkpoints\sam_vit_b_01ec64.pth --sam_model vit_b --sam_max_width 256 --sam_min_area_frac 0.20 --separate_by_class
+
+
+
+
+
+
+
+
+el pipeline de analyze_image.py está armado así (en ese orden):
+
+Detector (YOLOv8)
+
+Usa tu modelo YOLOv8 (--yolo_weights) sobre la imagen o carpeta.
+
+Devuelve las cajas (bboxes) de cada hoja.
+
+Recorte (YOLO crops)
+
+Con cada bbox se genera un recorte (.jpg).
+
+Si activaste --save_crops, se guardan en runs/pipeline/crops/.
+
+Segmentación (SAM) (si activaste --save_sam)
+
+Cada crop se pasa al SAM para segmentar la hoja.
+
+Se genera un PNG RGBA (con transparencia de fondo).
+
+Si usaste --separate_by_class, ya se ordena en sam/healthy o sam/affected según la clasificación.
+
+Clasificación (healthy vs affected)
+
+La entrada del clasificador es la salida de SAM (el PNG segmentado).
+
+Si por algún motivo SAM falla en un crop → se clasifica directamente el recorte de YOLO.
+
+Se guarda en el CSV y en la imagen anotada (predict/*.jpg).
+👉 Entonces sí: el flujo principal es exactamente el que describís:
+YOLO → crops → SAM (segmentación) → Clasificación sobre PNG segmentado.

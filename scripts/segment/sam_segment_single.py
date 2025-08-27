@@ -14,10 +14,16 @@ Requisitos:
 - segment-anything (SAM) de Meta: pip install git+https://github.com/facebookresearch/segment-anything.git
 - torch/torchvision (con o sin CUDA, según tu máquina)
 """
-import argparse, os, glob, numpy as np, cv2, torch
+import argparse, os, glob, numpy as np, cv2, torch, urllib.request
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+
+SAM_URLS = {
+    "vit_b": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
+    "vit_l": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
+    "vit_h": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
+}
 
 def ensure_dir(p): os.makedirs(p, exist_ok=True)
 
@@ -60,6 +66,7 @@ def build_mask_generator(sam, work_shape, min_area_frac):
         min_mask_region_area=min_area
     )
 
+
 def process_image(img_path, mask_generator, max_width):
     orig = cv2.imread(img_path)
     if orig is None: return None
@@ -79,6 +86,16 @@ def process_image(img_path, mask_generator, max_width):
     m_orig = (m_orig > 0).astype(np.uint8) * 255
     return tight_crop_rgba(orig, m_orig)
 
+
+def download_checkpoint(checkpoint_path, model_type):
+    url = SAM_URLS.get(model_type)
+    if not url:
+        raise ValueError(f"No URL definida para modelo {model_type}")
+    ensure_dir(os.path.dirname(checkpoint_path))
+    print(f"[INFO] Descargando checkpoint {model_type} desde {url} ...")
+    urllib.request.urlretrieve(url, checkpoint_path)
+    print(f"[OK] Guardado en {checkpoint_path}")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True, help="Carpeta con imágenes (crops de YOLO)")
@@ -88,6 +105,10 @@ def main():
     ap.add_argument("--max_width", type=int, default=1280, help="reescala de trabajo para SAM")
     ap.add_argument("--min_area_frac", type=float, default=0.002, help="umbral de área mínima relativa")
     args = ap.parse_args()
+
+    # Descarga automática si falta el checkpoint
+    if not os.path.exists(args.checkpoint):
+        download_checkpoint(args.checkpoint, args.model)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"[INFO] Cargando SAM {args.model} en {device} ...")
@@ -108,7 +129,6 @@ def main():
             ok += 1
             continue
 
-        # Generador dependiente del tamaño de trabajo
         tmp = cv2.imread(p)
         if tmp is None:
             print(f"[{i}/{len(imgs)}] ERROR al leer {name}")

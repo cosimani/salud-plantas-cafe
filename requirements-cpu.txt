@@ -1,0 +1,40 @@
+# Core scientific stack
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.13.1
+scikit-learn==1.5.0
+scikit-image==0.23.2
+matplotlib==3.9.0
+seaborn==0.13.2
+
+# Deep learning (instalar torch según tu sistema, ver README)
+# torch
+# torchvision
+# torchaudio
+
+# Object detection (YOLOv8)
+ultralytics==8.3.61
+ultralytics-thop==2.0.13
+
+# Image processing & augmentation
+opencv-python==4.10.0.82
+albumentations==1.4.8
+kornia==0.7.2
+
+# Segmentation / models (SAM, ONNX, timm)
+timm==1.0.3
+onnx==1.17.0
+onnxruntime==1.20.1
+onnxslim==0.1.48
+
+# Utilities
+tqdm==4.66.4
+PyYAML==6.0.2
+requests==2.32.3
+pillow==11.1.0
+
+# (Opcional) Para notebooks
+ipython==9.4.0
+ipywidgets==8.1.7
+jupyterlab-widgets==3.0.15
+widgetsnbextension==4.0.14
