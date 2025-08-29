@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Segmentación de hojas con SAM (crops pequeños) con presets y Top-K cut-outs.
-Ahora genera un CSV de métricas por corrida:
+Genera un CSV de métricas por corrida:
   runs/segment/<preset>_<sam_model>_<timestamp>/metrics_cutouts.csv
 y lo copia a runs/segment/latest/ junto con los PNG.
 
@@ -165,38 +165,56 @@ def mask_solidity(m_bool: np.ndarray) -> float:
     return area / hull_area
 
 def _run_len_from_corner(m_bool: np.ndarray, corner: str):
-    """
-    Devuelve (run_x, run_y) = cantidad de píxeles contiguos 'True'
-    desde la esquina indicada.
-    corner ∈ {'tl','tr','bl','br'}
-    """
+    """Cantidad de píxeles contiguos desde la esquina indicada."""
     H, W = m_bool.shape[:2]
     if corner == 'tl':
-        run_x = next((x for x in range(W) if not m_bool[0, x]), W)
-        run_y = next((y for y in range(H) if not m_bool[y, 0]), H)
+        run_x = 0
+        for x in range(W):
+            if m_bool[0, x]: run_x += 1
+            else: break
+        run_y = 0
+        for y in range(H):
+            if m_bool[y, 0]: run_y += 1
+            else: break
         corner_on = m_bool[0,0]
     elif corner == 'tr':
-        run_x = next((W-1-x for x in range(W) if not m_bool[0, W-1-x]), W)
-        run_y = next((y for y in range(H) if not m_bool[y, W-1]), H)
+        run_x = 0
+        for x in range(W-1, -1, -1):
+            if m_bool[0, x]: run_x += 1
+            else: break
+        run_y = 0
+        for y in range(H):
+            if m_bool[y, W-1]: run_y += 1
+            else: break
         corner_on = m_bool[0, W-1]
     elif corner == 'bl':
-        run_x = next((x for x in range(W) if not m_bool[H-1, x]), W)
-        run_y = next((H-1-y for y in range(H) if not m_bool[H-1-y, 0]), H)
+        run_x = 0
+        for x in range(W):
+            if m_bool[H-1, x]: run_x += 1
+            else: break
+        run_y = 0
+        for y in range(H-1, -1, -1):
+            if m_bool[y, 0]: run_y += 1
+            else: break
         corner_on = m_bool[H-1, 0]
     elif corner == 'br':
-        run_x = next((W-1-x for x in range(W) if not m_bool[H-1, W-1-x]), W)
-        run_y = next((H-1-y for y in range(H) if not m_bool[H-1-y, W-1]), H)
+        run_x = 0
+        for x in range(W-1, -1, -1):
+            if m_bool[H-1, x]: run_x += 1
+            else: break
+        run_y = 0
+        for y in range(H-1, -1, -1):
+            if m_bool[y, W-1]: run_y += 1
+            else: break
         corner_on = m_bool[H-1, W-1]
     else:
         return 0, 0
     if not corner_on:
         return 0, 0
-    return int(run_x), int(run_y)
+    return run_x, run_y
 
 def is_corner_wedge(mask_bool: np.ndarray, frac_thresh: float = 0.50) -> bool:
-    """
-    True si la máscara forma una “cuña de esquina”.
-    """
+    """True si la máscara forma una “cuña de esquina”."""
     H, W = mask_bool.shape[:2]
     if H == 0 or W == 0:
         return False
@@ -222,7 +240,7 @@ def to_rgba_crop(img_bgr: np.ndarray, mask_bool: np.ndarray):
     rgba[..., 3]  = crop_msk
     return rgba, bb
 
-# --- Construcción del generador SAM desde preset ---
+# --- Construcción AMG desde preset ---
 def build_mask_generator_from_preset(sam, work_shape, preset_name):
     H, W = work_shape[:2]
     cfg = PRESETS[preset_name]["generator"].copy()
@@ -256,37 +274,51 @@ def process_image_topk(orig_bgr: np.ndarray,
                        preselect_top: int = 24,
                        iou_suppress: float = 0.55,
                        reject_corner_wedge: bool = False,
-                       corner_frac: float = 0.50):
+                       corner_frac: float = 0.50,
+                       diag: dict = None):
     """
     Devuelve lista de dicts:
       {'rgba','bbox','coverage','solidity','center_score','score'}
+    Además rellena 'diag' con contadores y 'reason' si no hay resultados.
     """
+    if diag is None:
+        diag = {}
     H0, W0 = orig_bgr.shape[:2]
     work_rgb = cv2.cvtColor(work_bgr, cv2.COLOR_BGR2RGB)
 
     with torch.no_grad():
         masks = mask_generator.generate(work_rgb)
+    diag['n_masks'] = len(masks)
     if len(masks) == 0:
+        diag['reason'] = 'sam_no_masks'
         return []
 
     masks_sorted = sorted(
         masks, key=lambda m: int(m.get("area", int(m["segmentation"].sum()))), reverse=True
     )[:preselect_top]
+    diag['n_preselect'] = len(masks_sorted)
 
     bool_masks, scores, covs, sols, centers = [], [], [], [], []
+    below_cov = 0
+    below_sol = 0
+    corner_w = 0
+
     for m in masks_sorted:
         seg_small = m["segmentation"].astype(np.uint8)
         seg_orig  = cv2.resize(seg_small, (W0, H0), interpolation=cv2.INTER_NEAREST).astype(bool)
 
         cov = mask_area_norm(seg_orig)
         if cov < min_coverage:
+            below_cov += 1
             continue
 
         sol = mask_solidity(seg_orig)
         if sol < min_solidity:
+            below_sol += 1
             continue
 
         if reject_corner_wedge and is_corner_wedge(seg_orig, frac_thresh=corner_frac):
+            corner_w += 1
             continue  # descarta fondo pegado a esquina
 
         center = centroid_score(seg_orig, W0, H0)
@@ -295,14 +327,34 @@ def process_image_topk(orig_bgr: np.ndarray,
         bool_masks.append(seg_orig)
         covs.append(cov); sols.append(sol); centers.append(center); scores.append(score)
 
+    diag['n_below_cov'] = below_cov
+    diag['n_below_sol'] = below_sol
+    diag['n_corner_wedge'] = corner_w
+    diag['n_qualified'] = len(bool_masks)
+
     if not bool_masks:
+        pre = diag['n_preselect']
+        after_cov = pre - below_cov
+        after_sol = after_cov - below_sol
+        if pre == 0:
+            diag['reason'] = 'preselect_empty'
+        elif after_cov == 0:
+            diag['reason'] = 'all_below_min_coverage'
+        elif after_sol == 0:
+            diag['reason'] = 'all_below_min_solidity'
+        elif reject_corner_wedge and corner_w > 0 and after_sol > 0:
+            diag['reason'] = 'all_corner_wedge'
+        else:
+            diag['reason'] = 'filtered_out_unknown'
         return []
 
     best_idx = int(np.argmax(scores))
     best_cov = covs[best_idx]
     if best_cov >= max(coverage_full, 0.95):
         rgba, bb = to_rgba_crop(orig_bgr, bool_masks[best_idx])
-        if rgba is None: return []
+        if rgba is None:
+            diag['reason'] = 'rgba_failed'
+            return []
         return [{
             "rgba": rgba, "bbox": bb, "coverage": covs[best_idx],
             "solidity": sols[best_idx], "center_score": centers[best_idx],
@@ -320,6 +372,9 @@ def process_image_topk(orig_bgr: np.ndarray,
                 "solidity": sols[idx], "center_score": centers[idx],
                 "score": scores[idx]
             })
+
+    if not out_list:
+        diag['reason'] = 'post_nms_no_rgba'
     return out_list
 
 # --- Copia atómica "latest" ---
@@ -352,7 +407,7 @@ def install_latest_atomic(run_root: str) -> None:
         dst_sub = os.path.join(tmp, "rgba")
         safe_copytree(src_sub, dst_sub)
 
-    # copiar CSVs de métricas si existen
+    # copiar CSV de métricas si existen
     for fname in ("metrics_cutouts.csv",):
         src_f = os.path.join(run_root, fname)
         if os.path.isfile(src_f):
@@ -474,6 +529,7 @@ def main():
                 last_shape = work_shape
 
             try:
+                diag = {}
                 results = process_image_topk(
                     orig_bgr=orig,
                     work_bgr=work,
@@ -486,12 +542,20 @@ def main():
                     preselect_top=24,
                     iou_suppress=0.55,
                     reject_corner_wedge=args.reject_corner_wedge,
-                    corner_frac=args.corner_frac
+                    corner_frac=args.corner_frac,
+                    diag=diag
                 )
                 if not results:
-                    print(f"[{i}/{len(imgs)}] sin cut-outs válidos: {name}")
+                    reason = diag.get('reason', 'unknown')
+                    print(f"[{i}/{len(imgs)}] sin cut-outs válidos: {name} | motivo: {reason} "
+                          f"(masks={diag.get('n_masks',0)}, preselect={diag.get('n_preselect',0)}, "
+                          f"<cov={diag.get('n_below_cov',0)}, <sol={diag.get('n_below_sol',0)}, "
+                          f"corner={diag.get('n_corner_wedge',0)})")
                     skipped_imgs += 1
                     continue
+
+                saved_this_img = 0
+                discarded_this_img = 0
 
                 for k, info in enumerate(results, 1):
                     x1, y1, x2, y2 = info["bbox"]
@@ -508,7 +572,7 @@ def main():
                             "discarded", "too_small"
                         ])
                         discarded_pngs += 1
-                        print(f"[{i}/{len(imgs)}] {name} cut{k:02d} descartado por tamaño ({crop_w}x{crop_h})")
+                        discarded_this_img += 1
                         continue
 
                     out_name = f"{stem}_cut{k:02d}.png"
@@ -524,9 +588,10 @@ def main():
                         "saved", ""
                     ])
                     saved_pngs += 1
+                    saved_this_img += 1
 
                 ok_imgs += 1
-                print(f"[{i}/{len(imgs)}] {name} -> {len(results)} cut-outs (saved:{saved_pngs} / discarded:{discarded_pngs})")
+                print(f"[{i}/{len(imgs)}] {name} -> {len(results)} cut-outs (saved:{saved_this_img} / discarded:{discarded_this_img})")
             except Exception as e:
                 print(f"[{i}/{len(imgs)}] ERROR {name}: {e}")
                 skipped_imgs += 1
@@ -541,7 +606,15 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+
 # Ejemplos:
 # python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.25 --min_solidity 0.88
 # python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.25 --min_solidity 0.88 --reject_corner_wedge --corner_frac 0.50
 # python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.30 --min_solidity 0.88 --reject_corner_wedge --corner_frac 0.60
+
+
+# Este es el que se usó
+# python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.30 --min_solidity 0.70 --reject_corner_wedge --corner_frac 0.60
+# Resultados en:
+# ultra_recall_crops_vit_h_20250829-123905
