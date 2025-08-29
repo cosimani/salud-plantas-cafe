@@ -1,14 +1,16 @@
 # scripts/sam_segment_crops.py
 # -*- coding: utf-8 -*-
+
 """
 Segmentación de hojas con SAM (crops pequeños) con presets y Top-K cut-outs.
 Genera un CSV de métricas por corrida:
   runs/segment/<preset>_<sam_model>_<timestamp>/metrics_cutouts.csv
 y lo copia a runs/segment/latest/ junto con los PNG.
 
-Ejemplo:
+Ejecución sin parámetros (por defecto) ≡
   python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h \
-    --top_k 3 --min_coverage 0.20 --min_solidity 0.88
+    --top_k 1 --min_coverage 0.30 --min_solidity 0.70 \
+    --reject_corner_wedge --corner_frac 0.60
 """
 
 import os
@@ -424,24 +426,40 @@ def parse_args():
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--preset", type=str, default=None,
                     help=f"Preset SAM a usar. Opciones: {', '.join(PRESETS.keys())}")
-    ap.add_argument("--sam_model", type=str, choices=MODEL_CHOICES, default=None,
-                    help="Backbone de SAM: vit_b (def), vit_l, vit_h. También via env SAM_MODEL.")
+
+    # 👉 default ahora vit_h (si no pasás nada, usa vit_h)
+    ap.add_argument("--sam_model", type=str, choices=MODEL_CHOICES, default="vit_h",
+                    help="Backbone de SAM: vit_b, vit_l, vit_h (defecto: vit_h).")
+
     ap.add_argument("--ckpt", type=str, default=None,
                     help="Ruta a checkpoint .pth (opcional). Si no, usa el oficial según --sam_model.")
-    ap.add_argument("--top_k", type=int, default=int(os.environ.get("SAM_TOPK", 3)),
-                    help="Cantidad de cut-outs por imagen (default 3).")
-    ap.add_argument("--min_coverage", type=float, default=float(os.environ.get("SAM_MINCOV", 0.25)),
-                    help="Cobertura mínima relativa para aceptar una máscara (default 0.25).")
-    ap.add_argument("--min_solidity", type=float, default=float(os.environ.get("SAM_MINSOL", 0.90)),
-                    help="Mínimo de convexidad (solidity) para aceptar una máscara (default 0.90).")
+
+    # 👉 defaults según tu combo
+    ap.add_argument("--top_k", type=int, default=1,
+                    help="Cantidad de cut-outs por imagen (defecto 1).")
+    ap.add_argument("--min_coverage", type=float, default=0.30,
+                    help="Cobertura mínima relativa para aceptar una máscara (defecto 0.30).")
+    ap.add_argument("--min_solidity", type=float, default=0.70,
+                    help="Mínimo de convexidad (solidity) para aceptar una máscara (defecto 0.70).")
+
     ap.add_argument("--coverage_full", type=float, default=None,
-                    help="Override del coverage_full del preset (0..1). Si no se pasa, usa el del preset (con piso 0.95).")
-    ap.add_argument("--reject_corner_wedge", action="store_true",
-                    help="Si se activa, descarta máscaras con cuña de esquina (fondo).")
-    ap.add_argument("--corner_frac", type=float, default=float(os.environ.get("SAM_CORNER_FRAC", 0.50)),
-                    help="Fracción mínima (0..1) de ancho/alto para considerar cuña de esquina (default 0.50).")
+                    help="Override del coverage_full del preset (0..1). Si no se pasa, usa el del preset (piso 0.95).")
+
+    # 👉 por defecto RECHAZA cuña de esquina, con flag para desactivarlo
+    grp = ap.add_mutually_exclusive_group()
+    grp.add_argument("--reject_corner_wedge", dest="reject_corner_wedge", action="store_true",
+                     help="Descarta máscaras con 'cuña de esquina' (fondo). [defecto: activado]")
+    grp.add_argument("--no_reject_corner_wedge", dest="reject_corner_wedge", action="store_false",
+                     help="No descartar 'cuñas de esquina'.")
+    ap.set_defaults(reject_corner_wedge=True)
+
+    # 👉 default 0.60 como pediste
+    ap.add_argument("--corner_frac", type=float, default=0.60,
+                    help="Fracción mínima (0..1) de ancho/alto para considerar cuña de esquina (defecto 0.60).")
+
     ap.add_argument("-h", "--help", action="help", help="Mostrar ayuda y salir")
     return ap.parse_args()
+
 
 # --- Main ---
 def main():
