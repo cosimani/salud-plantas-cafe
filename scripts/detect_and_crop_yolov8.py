@@ -37,6 +37,14 @@ DEFAULT_CONF    = 0.40
 DEFAULT_IOU     = 0.45
 DEFAULT_IMGSZ   = 960
 
+# ---------- Filtro de tamaño mínimo (px) ----------
+# Acepta si:
+#   - Rectangular: un lado >= MIN_LONG y el otro >= MIN_SHORT (en cualquier orden), o
+#   - Cuadrado/Grande: ambos lados >= MIN_SQ.
+MIN_SHORT = 40   # lado corto para formato rectangular
+MIN_LONG  = 80   # lado largo para formato rectangular
+MIN_SQ    = 50   # mínimo para formato ~cuadrado
+
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
@@ -120,6 +128,16 @@ def install_latest_atomic(run_root: str) -> None:
     os.replace(tmp, latest)  # en Windows también funciona para mover/renombrar
 
 
+def is_valid_crop_size(w: int, h: int) -> bool:
+    """
+    Acepta si:
+      - Rectangular: un lado >= MIN_LONG y el otro >= MIN_SHORT, en cualquier orden, o
+      - Cuadrado/Grande: ambos lados >= MIN_SQ.
+    """
+    a, b = sorted((w, h))  # a = corto, b = largo
+    return (a >= MIN_SHORT and b >= MIN_LONG) or (a >= MIN_SQ and b >= MIN_SQ)
+
+
 def main():
     weights = DEFAULT_WEIGHTS
     source  = DEFAULT_SOURCE
@@ -142,11 +160,15 @@ def main():
     ensure_dir(crops_dir)
     ensure_dir(ann_dir)
 
-    # CSV de manifiesto de recortes
+    # CSV de manifiesto de recortes (incluye descartados)
     csv_path = os.path.join(crops_dir, "crops_manifest.csv")
     fcsv = open(csv_path, "w", newline="", encoding="utf-8")
     wr = csv.writer(fcsv)
-    wr.writerow(["orig_file", "crop_file", "conf", "x1", "y1", "x2", "y2", "img_w", "img_h", "class_id", "class_name"])
+    wr.writerow([
+        "orig_file", "crop_file", "status", "reason", "conf",
+        "x1", "y1", "x2", "y2", "bbox_w", "bbox_h",
+        "img_w", "img_h", "class_id", "class_name"
+    ])
 
     # Cargar modelo
     model = YOLO(weights)
@@ -173,7 +195,8 @@ def main():
     )
 
     total_imgs = 0
-    total_dets = 0
+    total_saved = 0
+    total_discarded = 0
 
     for r in results:
         img = r.orig_img
@@ -191,19 +214,36 @@ def main():
                 cls_id = int(b.cls[0]) if b.cls is not None else 0
                 cls_name = names.get(cls_id, str(cls_id))
 
-                # Recorte
-                crop = crop_xyxy(img, xyxy)
+                x1, y1, x2, y2 = map(int, xyxy)
+                bbox_w = max(0, x2 - x1)
+                bbox_h = max(0, y2 - y1)
+
+                # Filtrar por tamaño mínimo: si no cumple, NO dibujar ni recortar, pero registrar en CSV
+                if not is_valid_crop_size(bbox_w, bbox_h):
+                    wr.writerow([
+                        r.path, "", "discarded", "too_small", round(confb, 4),
+                        x1, y1, x2, y2, bbox_w, bbox_h,
+                        w, h, cls_id, cls_name
+                    ])
+                    total_discarded += 1
+                    continue
+
+                # Recorte válido
+                crop = crop_xyxy(img, (x1, y1, x2, y2))
                 if crop is not None:
                     crop_name = f"{stem}_{uuid.uuid4().hex[:8]}.jpg"
                     crop_path = os.path.join(crops_dir, crop_name)
                     cv2.imwrite(crop_path, crop)
 
-                    x1, y1, x2, y2 = map(int, xyxy)
-                    wr.writerow([r.path, crop_path, round(confb, 4), x1, y1, x2, y2, w, h, cls_id, cls_name])
-                    total_dets += 1
+                    wr.writerow([
+                        r.path, crop_path, "saved", "", round(confb, 4),
+                        x1, y1, x2, y2, bbox_w, bbox_h,
+                        w, h, cls_id, cls_name
+                    ])
+                    total_saved += 1
 
-                # Dibujo
-                draw_box(vis, xyxy, f"{cls_name} {confb:.2f}")
+                    # Dibujo solo para aceptados
+                    draw_box(vis, (x1, y1, x2, y2), f"{cls_name} {confb:.2f}")
 
         # Guardar imagen anotada (aunque no haya detecciones)
         out_vis = os.path.join(ann_dir, f"{stem}_pred.jpg")
@@ -216,7 +256,8 @@ def main():
     install_latest_atomic(base_dir)
 
     print(f"[OK] Imágenes procesadas: {total_imgs}")
-    print(f"[OK] Detecciones (crops): {total_dets}")
+    print(f"[OK] Detecciones guardadas (crops): {total_saved}")
+    print(f"[OK] Detecciones descartadas por tamaño: {total_discarded}")
     print(f"[OK] Recortes en: {crops_dir}")
     print(f"[OK] Manifiesto CSV: {csv_path}")
     print(f"[OK] Imágenes anotadas en: {ann_dir}")

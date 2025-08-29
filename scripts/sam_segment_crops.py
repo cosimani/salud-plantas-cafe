@@ -28,6 +28,18 @@ from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 DEFAULT_INPUT = os.path.join("runs", "predict", "latest", "crops")
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
+# --- Filtro de tamaño mínimo (px) ---
+# Acepta si:
+#   - Rectangular: un lado >= MIN_LONG y el otro >= MIN_SHORT (en cualquier orden), o
+#   - Cuadrado/Grande: ambos lados >= MIN_SQ.
+MIN_SHORT = 40   # lado corto para formato rectangular
+MIN_LONG  = 80   # lado largo para formato rectangular
+MIN_SQ    = 50   # mínimo para formato ~cuadrado
+
+def is_valid_crop_size(w: int, h: int) -> bool:
+    a, b = sorted((w, h))  # a = corto, b = largo
+    return (a >= MIN_SHORT and b >= MIN_LONG) or (a >= MIN_SQ and b >= MIN_SQ)
+
 # --- Modelos SAM soportados y checkpoints oficiales ---
 MODEL_CHOICES = ("vit_b", "vit_l", "vit_h")
 SAM_URLS = {
@@ -155,78 +167,44 @@ def mask_solidity(m_bool: np.ndarray) -> float:
 def _run_len_from_corner(m_bool: np.ndarray, corner: str):
     """
     Devuelve (run_x, run_y) = cantidad de píxeles contiguos 'True'
-    desde la esquina indicada, a lo largo del borde superior/inferior (x)
-    y del borde izquierdo/derecho (y).
-    corner ∈ {'tl','tr','bl','br'}  (top-left, top-right, bottom-left, bottom-right)
+    desde la esquina indicada.
+    corner ∈ {'tl','tr','bl','br'}
     """
     H, W = m_bool.shape[:2]
     if corner == 'tl':
-        # borde superior (y=0, x: 0→W-1)
-        run_x = 0
-        for x in range(W):
-            if m_bool[0, x]: run_x += 1
-            else: break
-        # borde izquierdo (x=0, y: 0→H-1)
-        run_y = 0
-        for y in range(H):
-            if m_bool[y, 0]: run_y += 1
-            else: break
+        run_x = next((x for x in range(W) if not m_bool[0, x]), W)
+        run_y = next((y for y in range(H) if not m_bool[y, 0]), H)
         corner_on = m_bool[0,0]
     elif corner == 'tr':
-        run_x = 0
-        for x in range(W-1, -1, -1):
-            if m_bool[0, x]: run_x += 1
-            else: break
-        run_y = 0
-        for y in range(H):
-            if m_bool[y, W-1]: run_y += 1
-            else: break
+        run_x = next((W-1-x for x in range(W) if not m_bool[0, W-1-x]), W)
+        run_y = next((y for y in range(H) if not m_bool[y, W-1]), H)
         corner_on = m_bool[0, W-1]
     elif corner == 'bl':
-        run_x = 0
-        for x in range(W):
-            if m_bool[H-1, x]: run_x += 1
-            else: break
-        run_y = 0
-        for y in range(H-1, -1, -1):
-            if m_bool[y, 0]: run_y += 1
-            else: break
+        run_x = next((x for x in range(W) if not m_bool[H-1, x]), W)
+        run_y = next((H-1-y for y in range(H) if not m_bool[H-1-y, 0]), H)
         corner_on = m_bool[H-1, 0]
     elif corner == 'br':
-        run_x = 0
-        for x in range(W-1, -1, -1):
-            if m_bool[H-1, x]: run_x += 1
-            else: break
-        run_y = 0
-        for y in range(H-1, -1, -1):
-            if m_bool[y, W-1]: run_y += 1
-            else: break
+        run_x = next((W-1-x for x in range(W) if not m_bool[H-1, W-1-x]), W)
+        run_y = next((H-1-y for y in range(H) if not m_bool[H-1-y, W-1]), H)
         corner_on = m_bool[H-1, W-1]
     else:
         return 0, 0
-
     if not corner_on:
         return 0, 0
-    return run_x, run_y
-
+    return int(run_x), int(run_y)
 
 def is_corner_wedge(mask_bool: np.ndarray, frac_thresh: float = 0.50) -> bool:
     """
-    True si la máscara forma un “cuña de esquina”:
-    - El píxel de la esquina está encendido
-    - El run contiguo sobre cada uno de los dos bordes desde esa esquina
-      cubre ≥ frac_thresh del ancho y del alto respectivamente.
+    True si la máscara forma una “cuña de esquina”.
     """
     H, W = mask_bool.shape[:2]
     if H == 0 or W == 0:
         return False
-    # chequeá las 4 esquinas
     for corner in ('tl','tr','bl','br'):
         run_x, run_y = _run_len_from_corner(mask_bool, corner)
         if run_x >= frac_thresh * W and run_y >= frac_thresh * H:
             return True
     return False
-
 
 def bbox_from_mask(mask_bool: np.ndarray):
     ys, xs = np.where(mask_bool)
@@ -277,11 +255,11 @@ def process_image_topk(orig_bgr: np.ndarray,
                        center_bonus: float = 0.20,
                        preselect_top: int = 24,
                        iou_suppress: float = 0.55,
-                       reject_corner_wedge: bool = False,  
-                       corner_frac: float = 0.50):         
+                       reject_corner_wedge: bool = False,
+                       corner_frac: float = 0.50):
     """
-    Devuelve lista de dicts con:
-      {'rgba', 'bbox', 'coverage', 'solidity', 'center_score', 'score'}
+    Devuelve lista de dicts:
+      {'rgba','bbox','coverage','solidity','center_score','score'}
     """
     H0, W0 = orig_bgr.shape[:2]
     work_rgb = cv2.cvtColor(work_bgr, cv2.COLOR_BGR2RGB)
@@ -307,7 +285,7 @@ def process_image_topk(orig_bgr: np.ndarray,
         sol = mask_solidity(seg_orig)
         if sol < min_solidity:
             continue
-          
+
         if reject_corner_wedge and is_corner_wedge(seg_orig, frac_thresh=corner_frac):
             continue  # descarta fondo pegado a esquina
 
@@ -442,7 +420,8 @@ def main():
             "run_id","preset","sam_model","top_k","min_coverage","min_solidity","coverage_full",
             "reject_corner_wedge","corner_frac",
             "input_file","img_w","img_h","rank","output_png","x1","y1","x2","y2",
-            "coverage","solidity","center_score","score"
+            "coverage","solidity","center_score","score",
+            "status","reason"
         ])
 
         # Checkpoint y device
@@ -469,7 +448,8 @@ def main():
 
         mask_generator = None
         last_shape = None
-        ok, skipped = 0, 0
+        ok_imgs, skipped_imgs = 0, 0
+        saved_pngs, discarded_pngs = 0, 0
 
         for i, path in enumerate(imgs, 1):
             name = os.path.basename(path)
@@ -478,7 +458,7 @@ def main():
             orig = cv2.imread(path)
             if orig is None:
                 print(f"[{i}/{len(imgs)}] ERROR al leer {name}")
-                skipped += 1
+                skipped_imgs += 1
                 continue
 
             H0, W0 = orig.shape[:2]
@@ -505,36 +485,55 @@ def main():
                     center_bonus=0.20,
                     preselect_top=24,
                     iou_suppress=0.55,
-                    reject_corner_wedge=args.reject_corner_wedge,  
-                    corner_frac=args.corner_frac                   
+                    reject_corner_wedge=args.reject_corner_wedge,
+                    corner_frac=args.corner_frac
                 )
                 if not results:
                     print(f"[{i}/{len(imgs)}] sin cut-outs válidos: {name}")
-                    skipped += 1
+                    skipped_imgs += 1
                     continue
 
                 for k, info in enumerate(results, 1):
+                    x1, y1, x2, y2 = info["bbox"]
+                    crop_w, crop_h = x2 - x1, y2 - y1
+
+                    if not is_valid_crop_size(crop_w, crop_h):
+                        # Registrar descartado (no se guarda PNG)
+                        wr.writerow([
+                            run_id, preset, sam_model, args.top_k, args.min_coverage, args.min_solidity, run_cfg["coverage_full"],
+                            int(args.reject_corner_wedge), args.corner_frac,
+                            path, W0, H0, k, "", x1, y1, x2, y2,
+                            round(info["coverage"], 6), round(info["solidity"], 6),
+                            round(info["center_score"], 6), round(info["score"], 6),
+                            "discarded", "too_small"
+                        ])
+                        discarded_pngs += 1
+                        print(f"[{i}/{len(imgs)}] {name} cut{k:02d} descartado por tamaño ({crop_w}x{crop_h})")
+                        continue
+
                     out_name = f"{stem}_cut{k:02d}.png"
                     out_path = os.path.join(rgba_dir, out_name)
                     cv2.imwrite(out_path, info["rgba"])
 
-                    x1,y1,x2,y2 = info["bbox"]
                     wr.writerow([
                         run_id, preset, sam_model, args.top_k, args.min_coverage, args.min_solidity, run_cfg["coverage_full"],
                         int(args.reject_corner_wedge), args.corner_frac,
                         path, W0, H0, k, out_name, x1, y1, x2, y2,
                         round(info["coverage"], 6), round(info["solidity"], 6),
-                        round(info["center_score"], 6), round(info["score"], 6)
+                        round(info["center_score"], 6), round(info["score"], 6),
+                        "saved", ""
                     ])
+                    saved_pngs += 1
 
-                ok += 1
-                print(f"[{i}/{len(imgs)}] {name} -> {len(results)} cut-outs")
+                ok_imgs += 1
+                print(f"[{i}/{len(imgs)}] {name} -> {len(results)} cut-outs (saved:{saved_pngs} / discarded:{discarded_pngs})")
             except Exception as e:
                 print(f"[{i}/{len(imgs)}] ERROR {name}: {e}")
-                skipped += 1
+                skipped_imgs += 1
 
     install_latest_atomic(out_root)
-    print(f"\n[RESUMEN] total:{len(imgs)} ok:{ok} saltadas:{skipped}")
+    print(f"\n[RESUMEN] imgs_total:{len(imgs)} imgs_ok:{ok_imgs} imgs_sin_cuts:{skipped_imgs}")
+    print(f"[RESUMEN] pngs_saved:{saved_pngs} pngs_discarded:{discarded_pngs}")
     print(f"[OK] Cut-outs en: {rgba_dir}")
     print(f"[OK] CSV: {csv_path}")
     print(f"[OK] Últimos: runs/segment/latest/ (incluye rgba/ y metrics_cutouts.csv)")
@@ -542,9 +541,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-
-# tu combo que mejor rindió, ahora con CSV
+# Ejemplos:
 # python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.25 --min_solidity 0.88
-
-
-# python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 3 --min_coverage 0.25 --min_solidity 0.88 --reject_corner_wedge --corner_frac 0.50
+# python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.25 --min_solidity 0.88 --reject_corner_wedge --corner_frac 0.50
+# python scripts/sam_segment_crops.py --preset ultra_recall_crops --sam_model vit_h --top_k 1 --min_coverage 0.30 --min_solidity 0.88 --reject_corner_wedge --corner_frac 0.60
