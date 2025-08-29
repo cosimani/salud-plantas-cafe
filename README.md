@@ -79,7 +79,9 @@ salud-plantas-cafe/
 ## 🏋️ Entrenamiento YOLOv8
 
 ```bash
-yolo train model=yolov8s.pt data=configs/labels.yaml epochs=100 imgsz=640 batch=32
+
+python scripts/train_yolov8.py
+
 ```
 
 📦 Dataset YOLO disponible en **Releases**:  

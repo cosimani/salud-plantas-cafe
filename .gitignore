@@ -16,3 +16,17 @@ checkpoints/
 # OS
 .DS_Store
 Thumbs.db
+
+# Ignorar modelos
+models/*
+!models/.gitkeep
+
+# Ignorar datasets y runs
+data/*
+!data/.gitkeep
+
+runs/*
+!runs/.gitkeep
+
+# Ignorar pesos sueltos
+*.pt
