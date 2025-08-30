@@ -53,11 +53,15 @@ def build_dataloaders(root, img_size, batch_size, num_workers=0, use_rrc=False, 
     val_ds   = datasets.ImageFolder(val_dir,   transform=val_tf)
     return train_ds, val_ds
 
-def make_loaders(train_ds, val_ds, batch_size, num_workers=0, sampler=None):
-    train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=(sampler is None),
-                          sampler=sampler, num_workers=num_workers, pin_memory=True)
-    val_dl   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                          num_workers=num_workers, pin_memory=True)
+def make_loaders(train_ds, val_ds, batch_size, num_workers=0, sampler=None, pin_memory=False):
+    train_dl = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=(sampler is None),
+        sampler=sampler, num_workers=num_workers, pin_memory=pin_memory
+    )
+    val_dl = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin_memory
+    )
     return train_dl, val_dl
 
 def build_model(name, num_classes, use_pretrained, feature_extraction):
@@ -82,8 +86,8 @@ def evaluate(model, dl, device, return_preds=False):
     model.eval(); correct=0; total=0; loss_sum=0.0
     criterion = nn.CrossEntropyLoss()
     all_t, all_p = [], []
-    autocast_ok = (device.type=="cuda")
-    with torch.cuda.amp.autocast(enabled=autocast_ok):
+    autocast_ok = (device.type == "cuda")
+    with torch.amp.autocast('cuda', enabled=autocast_ok):
         for x,y in dl:
             x,y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             logits = model(x)
@@ -127,9 +131,14 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.backends.cudnn.benchmark = True
 
-    if args.workers <= 0:
-        try: args.workers = max(os.cpu_count()-1, 2)
-        except Exception: args.workers = 2
+    # Respeta lo que venga por --workers. Si el usuario quiere auto, que pase --workers -1
+    if args.workers == -1:
+        try:
+            args.workers = max(os.cpu_count() - 1, 2)
+        except Exception:
+            args.workers = 2
+    # Si pasa 0, queda 0 (sin subprocess en Windows)
+
 
     print("Device:", device)
 
@@ -151,7 +160,9 @@ def train(args):
         class_weights_tensor = class_weights_tensor.to(device)
         # (alternativa sampler comentada)
 
-    train_dl, val_dl = make_loaders(train_ds, val_ds, args.batch_size, args.workers, sampler=sampler)
+    train_dl, val_dl = make_loaders(
+        train_ds, val_ds, args.batch_size, args.workers, sampler=sampler, pin_memory=args.pin_memory
+    )
 
     model = build_model(args.model, num_classes, args.use_pretrained, args.feature_extraction is True).to(device)
 
@@ -184,7 +195,7 @@ def train(args):
     best_acc = -1.0
     patience = args.early_stop
     patience_counter = 0
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type=="cuda"))
+    scaler = torch.amp.GradScaler('cuda', enabled=(device.type == "cuda"))
 
     for epoch in range(1, args.epochs+1):
         model.train()
@@ -194,7 +205,7 @@ def train(args):
         for x,y in train_dl:
             x,y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=(device.type=="cuda")):
+            with torch.amp.autocast('cuda', enabled=(device.type == "cuda")):
                 logits = model(x)
                 loss = criterion(logits, y)
             scaler.scale(loss).backward()
@@ -309,6 +320,8 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--save_confusion", action="store_true",
                     help="Guarda confusion_matrix.csv (+ PNG si hay matplotlib)")
+    ap.add_argument("--pin_memory", action="store_true", help="Usar pin_memory en DataLoader (desactivado por defecto)")
+
     args = ap.parse_args()
     if args.no_feature_extraction:
         args.feature_extraction = False
@@ -317,3 +330,6 @@ if __name__ == "__main__":
 
 
 # python scripts/train_resnet.py --data_dir data/classify --model resnet18 --epochs 20 --batch_size 32 --img_size 384 --use_pretrained --auto_class_weights --backbone_lr_scale 0.1
+
+
+# python scripts/train_resnet.py --data_dir data/classify --model resnet18 --epochs 20 --batch_size 32 --img_size 384 --use_pretrained --auto_class_weights --backbone_lr_scale 0.1 --workers 0
