@@ -149,9 +149,3 @@ python scripts/pipeline/analyze_image.py   --dir data/yolo/images/test   --yolo_
 - **SAM (Segment Anything)** → [Meta AI](https://github.com/facebookresearch/segment-anything)  
 - **Lacunarity Pooling (opcional)** → [AVL Lab CVPRW 2024](https://github.com/Advanced-Vision-and-Learning-Lab/2024_V4A_Lacunarity_Pooling_Layer)  
 
----
-
-## 📜 Licencia
-
-Este proyecto se distribuye bajo licencia [MIT](LICENSE).  
-¡Sentite libre de usarlo, adaptarlo y contribuir! 🤝
