@@ -24,20 +24,24 @@ def run(cmd: list[str]) -> None:
 def main():
     py = sys.executable
 
-    # 1) YOLOv8: detecta, recorta y anota (usa sus defaults)
+    # 1) YOLO
     run([py, "scripts/detect_and_crop_yolov8.py"])
 
-    # 2) SAM: toma crops de runs/predict/latest/crops (usa sus defaults)
+    # 2) SAM
     run([py, "scripts/sam_segment_crops.py"])
 
-    # 3) Clasificación: toma rgba de runs/segment/latest/rgba (usa sus defaults)
+    # 3) Clasificación (SAM RGBA)
     run([py, "scripts/predict_resnet.py"])
 
-    # 4) Anotar originales con healthy/affected según clasificación
+    # 3b) Fallback: clasificar crops YOLO sin SAM
+    run([py, "scripts/predict_missing_yolocrops.py"])
+
+    # 4) Anotar originales healthy/affected
     run([py, "scripts/annotate_from_predictions.py"])
 
-    # 5) Empaquetar todo a runs/pipeline/<timestamp> y latest
+    # 5) Empaquetar a runs/pipeline/<timestamp> y latest
     run([py, "scripts/collect_pipeline_outputs.py"])
+
 
     print("\n[OK] Pipeline completo con parámetros por defecto.")
     print(" - YOLO   → runs/predict/latest/")

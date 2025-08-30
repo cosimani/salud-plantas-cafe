@@ -50,6 +50,34 @@ def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+# Añade estas helpers arriba (debajo de is_valid_crop_size)
+def resize_for_annotation(img, target_long=1600):
+    h, w = img.shape[:2]
+    L = max(h, w)
+    if L == 0:
+        return img, 1.0
+    s = float(target_long) / float(L)
+    new_w = max(1, int(round(w * s)))
+    new_h = max(1, int(round(h * s)))
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR), s
+
+def viz_params(img_shape):
+    h, w = img_shape[:2]
+    L = max(h, w)
+    base = L / 1000.0
+    thickness = max(2, int(round(2 * base)))
+    font_scale = max(0.6, 0.6 * base)
+    return font_scale, thickness
+
+def draw_box(img, xyxy, label_text, color=(0, 200, 255), thickness=2, font_scale=0.6):
+    x1, y1, x2, y2 = map(int, xyxy)
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+    (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, max(1, thickness))
+    y_text = max(0, y1 - 8)
+    cv2.rectangle(img, (x1, y_text - th - 4), (x1 + tw + 6, y_text + baseline), color, -1)
+    cv2.putText(img, label_text, (x1 + 3, y_text), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), max(1, thickness), cv2.LINE_AA)
+
+
 def crop_xyxy(img, xyxy):
     x1, y1, x2, y2 = map(int, xyxy)
     h, w = img.shape[:2]
@@ -60,13 +88,13 @@ def crop_xyxy(img, xyxy):
     return img[y1:y2, x1:x2]
 
 
-def draw_box(img, xyxy, label_text, color=(0, 200, 255), thickness=2):
-    x1, y1, x2, y2 = map(int, xyxy)
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
-    (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-    y_text = max(0, y1 - 8)
-    cv2.rectangle(img, (x1, y_text - th - 4), (x1 + tw + 6, y_text + baseline), color, -1)
-    cv2.putText(img, label_text, (x1 + 3, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+# def draw_box(img, xyxy, label_text, color=(0, 200, 255), thickness=2):
+#     x1, y1, x2, y2 = map(int, xyxy)
+#     cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+#     (tw, th), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+#     y_text = max(0, y1 - 8)
+#     cv2.rectangle(img, (x1, y_text - th - 4), (x1 + tw + 6, y_text + baseline), color, -1)
+#     cv2.putText(img, label_text, (x1 + 3, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
 
 
 def safe_copytree(src: str, dst: str) -> None:
@@ -198,6 +226,8 @@ def main():
     total_saved = 0
     total_discarded = 0
 
+
+    # Reemplaza el contenido del bucle por acumulación y dibujo tras el resize:
     for r in results:
         img = r.orig_img
         if img is None:
@@ -205,8 +235,8 @@ def main():
         h, w = img.shape[:2]
         stem = os.path.splitext(os.path.basename(r.path))[0]
 
-        vis = img.copy()
-
+        # acumulamos cajas aceptadas (para dibujar sobre imagen reescalada)
+        accepted = []  # (x1,y1,x2,y2,label_text)
         if r.boxes is not None and len(r.boxes) > 0:
             for b in r.boxes:
                 xyxy = b.xyxy[0].tolist()
@@ -218,17 +248,14 @@ def main():
                 bbox_w = max(0, x2 - x1)
                 bbox_h = max(0, y2 - y1)
 
-                # Filtrar por tamaño mínimo: si no cumple, NO dibujar ni recortar, pero registrar en CSV
                 if not is_valid_crop_size(bbox_w, bbox_h):
                     wr.writerow([
                         r.path, "", "discarded", "too_small", round(confb, 4),
-                        x1, y1, x2, y2, bbox_w, bbox_h,
-                        w, h, cls_id, cls_name
+                        x1, y1, x2, y2, bbox_w, bbox_h, w, h, cls_id, cls_name
                     ])
                     total_discarded += 1
                     continue
 
-                # Recorte válido
                 crop = crop_xyxy(img, (x1, y1, x2, y2))
                 if crop is not None:
                     crop_name = f"{stem}_{uuid.uuid4().hex[:8]}.jpg"
@@ -237,18 +264,77 @@ def main():
 
                     wr.writerow([
                         r.path, crop_path, "saved", "", round(confb, 4),
-                        x1, y1, x2, y2, bbox_w, bbox_h,
-                        w, h, cls_id, cls_name
+                        x1, y1, x2, y2, bbox_w, bbox_h, w, h, cls_id, cls_name
                     ])
                     total_saved += 1
 
-                    # Dibujo solo para aceptados
-                    draw_box(vis, (x1, y1, x2, y2), f"{cls_name} {confb:.2f}")
+                    accepted.append((x1, y1, x2, y2, f"{cls_name} {confb:.2f}"))
 
-        # Guardar imagen anotada (aunque no haya detecciones)
+        # reescalar imagen y dibujar
+        vis, s = resize_for_annotation(img, target_long=1600)
+        fs, th = viz_params(vis.shape)
+        for (x1, y1, x2, y2, lab) in accepted:
+            draw_box(
+                vis,
+                (int(round(x1 * s)), int(round(y1 * s)), int(round(x2 * s)), int(round(y2 * s))),
+                lab, color=(0, 200, 255), thickness=th, font_scale=fs
+            )
+
         out_vis = os.path.join(ann_dir, f"{stem}_pred.jpg")
         cv2.imwrite(out_vis, vis)
         total_imgs += 1
+
+    # for r in results:
+    #     img = r.orig_img
+    #     if img is None:
+    #         continue
+    #     h, w = img.shape[:2]
+    #     stem = os.path.splitext(os.path.basename(r.path))[0]
+
+    #     vis = img.copy()
+
+    #     if r.boxes is not None and len(r.boxes) > 0:
+    #         for b in r.boxes:
+    #             xyxy = b.xyxy[0].tolist()
+    #             confb = float(b.conf[0]) if b.conf is not None else 0.0
+    #             cls_id = int(b.cls[0]) if b.cls is not None else 0
+    #             cls_name = names.get(cls_id, str(cls_id))
+
+    #             x1, y1, x2, y2 = map(int, xyxy)
+    #             bbox_w = max(0, x2 - x1)
+    #             bbox_h = max(0, y2 - y1)
+
+    #             # Filtrar por tamaño mínimo: si no cumple, NO dibujar ni recortar, pero registrar en CSV
+    #             if not is_valid_crop_size(bbox_w, bbox_h):
+    #                 wr.writerow([
+    #                     r.path, "", "discarded", "too_small", round(confb, 4),
+    #                     x1, y1, x2, y2, bbox_w, bbox_h,
+    #                     w, h, cls_id, cls_name
+    #                 ])
+    #                 total_discarded += 1
+    #                 continue
+
+    #             # Recorte válido
+    #             crop = crop_xyxy(img, (x1, y1, x2, y2))
+    #             if crop is not None:
+    #                 crop_name = f"{stem}_{uuid.uuid4().hex[:8]}.jpg"
+    #                 crop_path = os.path.join(crops_dir, crop_name)
+    #                 cv2.imwrite(crop_path, crop)
+
+    #                 wr.writerow([
+    #                     r.path, crop_path, "saved", "", round(confb, 4),
+    #                     x1, y1, x2, y2, bbox_w, bbox_h,
+    #                     w, h, cls_id, cls_name
+    #                 ])
+    #                 total_saved += 1
+
+    #                 # Dibujo solo para aceptados
+    #                 draw_box(vis, (x1, y1, x2, y2), f"{cls_name} {confb:.2f}")
+
+    #     # Guardar imagen anotada (aunque no haya detecciones)
+    #     out_vis = os.path.join(ann_dir, f"{stem}_pred.jpg")
+    #     cv2.imwrite(out_vis, vis)
+    #     total_imgs += 1
 
     fcsv.close()
 

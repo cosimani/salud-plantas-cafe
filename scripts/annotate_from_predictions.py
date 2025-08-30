@@ -19,13 +19,42 @@ OUTDIR   = Path("runs/predict/latest/annotated_cls")
 def color_for(label: str):
     return (0,200,0) if label.lower().startswith("heal") else (0,0,255)
 
-def draw_box(img, xyxy, text, color, thickness=2):
+
+# Añade helpers arriba de color_for:
+def resize_for_annotation(img, target_long=1600):
+    h, w = img.shape[:2]
+    L = max(h, w)
+    if L == 0:
+        return img, 1.0
+    s = float(target_long) / float(L)
+    new_w = max(1, int(round(w * s)))
+    new_h = max(1, int(round(h * s)))
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR), s
+
+def viz_params(img_shape):
+    h, w = img_shape[:2]
+    L = max(h, w)
+    base = L / 1000.0
+    thickness = max(2, int(round(2 * base)))
+    font_scale = max(0.6, 0.6 * base)
+    return font_scale, thickness
+
+def draw_box(img, xyxy, text, color, thickness=2, font_scale=0.6):
     x1,y1,x2,y2 = map(int, xyxy)
     cv2.rectangle(img,(x1,y1),(x2,y2),color,thickness)
-    (tw,th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+    (tw,th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, max(1, thickness))
     y_text = max(0, y1-8)
     cv2.rectangle(img,(x1, y_text-th-4),(x1+tw+6, y_text+base), color, -1)
-    cv2.putText(img, text, (x1+3, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 2, cv2.LINE_AA)
+    cv2.putText(img, text, (x1+3, y_text), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,0,0), max(1, thickness), cv2.LINE_AA)
+
+
+# def draw_box(img, xyxy, text, color, thickness=2):
+#     x1,y1,x2,y2 = map(int, xyxy)
+#     cv2.rectangle(img,(x1,y1),(x2,y2),color,thickness)
+#     (tw,th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+#     y_text = max(0, y1-8)
+#     cv2.rectangle(img,(x1, y_text-th-4),(x1+tw+6, y_text+base), color, -1)
+#     cv2.putText(img, text, (x1+3, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 2, cv2.LINE_AA)
 
 def best_preds_by_cropstem(pred_csv: Path):
     """Devuelve {crop_stem: (label, score)} tomando el mejor score si hay varios cut-outs."""
@@ -74,15 +103,35 @@ def main():
             per_orig.setdefault(orig, []).append((x1,y1,x2,y2,label,score))
 
     # Dibujar por imagen original
+    # for orig, items in per_orig.items():
+    #     img = cv2.imread(str(orig))
+    #     if img is None:
+    #         print(f"[WARN] No se pudo leer {orig}")
+    #         continue
+    #     for (x1,y1,x2,y2,label,score) in items:
+    #         draw_box(img, (x1,y1,x2,y2), f"{label} {score:.2f}", color_for(label))
+    #     out_path = OUTDIR / (orig.stem + "_cls.jpg")
+    #     cv2.imwrite(str(out_path), img)
+    #     print(f"[OK] {out_path}")
+
     for orig, items in per_orig.items():
         img = cv2.imread(str(orig))
         if img is None:
             print(f"[WARN] No se pudo leer {orig}")
             continue
+
+        vis, s = resize_for_annotation(img, target_long=1600)
+        fs, th = viz_params(vis.shape)
+
         for (x1,y1,x2,y2,label,score) in items:
-            draw_box(img, (x1,y1,x2,y2), f"{label} {score:.2f}", color_for(label))
+            draw_box(
+                vis,
+                (int(round(x1*s)), int(round(y1*s)), int(round(x2*s)), int(round(y2*s))),
+                f"{label} {score:.2f}", color_for(label), thickness=th, font_scale=fs
+            )
+
         out_path = OUTDIR / (orig.stem + "_cls.jpg")
-        cv2.imwrite(str(out_path), img)
+        cv2.imwrite(str(out_path), vis)
         print(f"[OK] {out_path}")
 
 if __name__ == "__main__":
